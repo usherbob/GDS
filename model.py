@@ -463,6 +463,36 @@ class Pool(nn.Module):
         node = torch.mul(node_static, values)
         return node, node_feature, node_static
 
+def unpool(xyz, unknown_xyz, features):
+    """
+    idea from three interpolate of PointNet2
+    input:
+        param xyz: input data Bx3xM tensor
+        param unknown_xyz: input node data Bx3xN tensor
+        param features: input feature BxCxM tensor
+    return:
+        unknown_features: BxCxN
+    """
+    M = xyz.size(-1)
+    xyz_expanded = xyz.unsqueeze(2).expand(unknown_xyz.size(0), unknown_xyz.size(1), unknown_xyz.size(2), M) # B, 3, N, M
+    unknown_xyz_expanded = unknown_xyz.unsqueeze(3).expand_as(xyz_expanded)
+
+    # calcuate difference between x and each node
+    diff = unknown_xyz_expanded - xyz_expanded  # Bx3xNxM
+    diff_norm = (diff ** 2).sum(dim=1)  # BxNxM
+    nn_dist, nn_idx = torch.topk(diff_norm, k=3, dim=-1, largest=False, sorted=False)  # BxNx3
+    weight = F.softmax(nn_dist, dim=-1) # BxNx3
+
+    # gather known features and aggregate unknown features
+    nn_idx_fold = nn_idx.reshape(nn_idx.shape[0], -1)  # Bx3N
+    nn_idx_fold = nn_idx_fold.unsqueeze(1).expand(
+        features.size(0), features.size(1), nn_idx_fold.size(-1)) # B x C x 3N
+    feature_grouped = features.gather(dim=2, index=nn_idx_fold)  # B x C x 3N
+    feature_unfold = feature_grouped.reshape(features.shape[0], features.shape[1],
+                                             nn_idx.shape[1], nn_idx.shape[2])  # B x C x N x 3
+    unknown_features = torch.sum(weight.unsqueeze(1) * feature_unfold, dim=-1)
+    return unknown_features
+
 
 def aggregate(xyz, node, features, k):
     """
